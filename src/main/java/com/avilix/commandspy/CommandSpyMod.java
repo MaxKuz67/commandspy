@@ -1,33 +1,32 @@
 package com.avilix.commandspy;
 
+import net.luckperms.api.LuckPermsProvider;
+import net.luckperms.api.model.group.Group;
+import net.luckperms.api.model.user.User;
+import net.luckperms.api.node.Node;
+import net.luckperms.api.query.QueryOptions;
+import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.network.chat.Component;
 import com.mojang.brigadier.ParseResults;
-import com.mojang.brigadier.context.CommandContext;
-import com.mojang.brigadier.StringReader;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.bus.api.SubscribeEvent;
-import net.neoforged.neoforge.event.ServerChatEvent;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
 import net.neoforged.fml.common.Mod;
-import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.commands.CommandSourceStack;
 import net.neoforged.neoforge.event.CommandEvent;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.level.ServerPlayer;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.util.HashSet;
-import java.util.Set;
 import java.util.UUID;
 import java.util.Locale;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.HoverEvent;
 import net.minecraft.network.chat.Style;
-import net.minecraft.network.chat.Component;
 
 import net.minecraft.commands.Commands;
 
@@ -36,7 +35,6 @@ import net.minecraft.commands.Commands;
 public class CommandSpyMod {
     public static final String MODID = "commandspy";
     private static final Logger LOGGER = LogManager.getLogger(MODID);
-    private final Set<UUID> spies = new HashSet<>();
 
 
     @SubscribeEvent
@@ -54,12 +52,21 @@ public class CommandSpyMod {
                             CommandSourceStack src = ctx.getSource();
                             ServerPlayer player = (ServerPlayer) src.getEntity();
                             UUID id = player.getUUID();
-                            if (spies.remove(id)) {
+                            User user = LuckPermsProvider.get().getUserManager().getUser(id);
+                            QueryOptions emptyOptions = LuckPermsProvider.get().getContextManager().getStaticQueryOptions();
+                            if (LuckPermsProvider.get().getGroupManager().getGroup("spyViewer") == null){
+                                LuckPermsProvider.get().getGroupManager().createAndLoadGroup("spyViewer").join();
+                            }
+                            Group group = LuckPermsProvider.get().getGroupManager().getGroup("spyViewer");
+                            boolean isSpy = user.getInheritedGroups(emptyOptions).contains(group);
+                            if (isSpy) {
+                                user.data().remove(Node.builder("group.spyViewer").build());
                                 player.sendSystemMessage(Component.literal("§7[CommandSpy] §coff"));
                             } else {
-                                spies.add(id);
+                                user.data().add(Node.builder("group.spyViewer").build());
                                 player.sendSystemMessage(Component.literal("§7[CommandSpy] §aon"));
                             }
+                            LuckPermsProvider.get().getUserManager().saveUser(user);
                             return 1;
                         })
         );
@@ -80,40 +87,46 @@ public class CommandSpyMod {
         CommandSourceStack src = parse.getContext().getSource();
 
         // Определяем отправителя и координаты
-        String senderName;
-        boolean isPlayer = false;
-        double x = 0, y = 0, z = 0;
+        String senderName = src.getDisplayName().getString();
+        boolean hasCords = false;
+        BlockPos cords = null;
+        String cordLogs;
 
-        if (src.getEntity() instanceof ServerPlayer ply) {
-            senderName = ply.getGameProfile().getName();
-            isPlayer = true;
-            x = ply.getX();
-            y = ply.getY();
-            z = ply.getZ();
+        if (src.getEntity() instanceof ServerPlayer ply){
+            hasCords = true;
+            cords = ply.getOnPos();
+            cordLogs = "[" + cords.toString() + "]";
+        } else if (senderName.equals("@")) {
+            senderName = "CommandBlock";
+            hasCords = true;
+            Vec3 pos = src.getPosition();
+            cords = new BlockPos((int)pos.x(), (int)pos.y(), (int)pos.z());
+            cordLogs = "[" + cords.toString() + "]";
         } else {
-            senderName = "CONSOLE";
+            cordLogs = "[N/A]";
         }
 
-        // Логируем в консоль / latest.log
-        String coordLog = isPlayer
-                ? String.format(Locale.ROOT, "[%.1f, %.1f, %.1f]", x, y, z)
-                : "[N/A]";
-        LOGGER.info("[CommandSpy] {} {} → /{}", senderName, coordLog, input);
+        LOGGER.info("[CommandSpy] {} {} → /{}", senderName, cordLogs, input);
 
         // Рассылаем spy-игрокам с кликабельными координатами
         MinecraftServer server = src.getServer();
-        for (UUID uuid : spies) {
-            ServerPlayer spy = server.getPlayerList().getPlayer(uuid);
-            if (spy == null || (src.getEntity() instanceof ServerPlayer sp && sp.getUUID().equals(uuid))) {
+        for (ServerPlayer spy : server.getPlayerList().getPlayers()) {
+            if (spy == null || (src.getEntity() instanceof ServerPlayer sp && sp.is(spy))) {
                 continue;
             }
+            UUID id = spy.getUUID();
+            User user = LuckPermsProvider.get().getUserManager().getUser(id);
+            QueryOptions emptyOptions = LuckPermsProvider.get().getContextManager().getStaticQueryOptions();
+            Group group = LuckPermsProvider.get().getGroupManager().getGroup("spyViewer");
+            boolean isSpy = user.getInheritedGroups(emptyOptions).contains(group);
+            if (!isSpy)continue;
 
             Component coordsComponent;
-            if (isPlayer) {
+            if (hasCords) {
                 // Команда для телепорта при клике
-                String tpCommand = String.format(Locale.ROOT, "/tp %.1f %.1f %.1f", x, y, z);
+                String tpCommand = String.format(Locale.ROOT, "/tp %d %d %d", cords.getX(), cords.getY(), cords.getZ());
                 coordsComponent = Component.literal(
-                                String.format(Locale.ROOT, "§b[%.1f, %.1f, %.1f]", x, y, z))
+                                String.format(Locale.ROOT, "§b[%d, %d, %d]", cords.getX(), cords.getY(), cords.getZ()))
                         .withStyle(Style.EMPTY
                                 .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, tpCommand))
                                 .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
