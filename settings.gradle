@@ -1,8 +1,12 @@
 pluginManagement {
     repositories {
-        mavenLocal()
+        // чтобы найти все обычные плагины
         gradlePluginPortal()
-        maven { url = 'https://maven.neoforged.net/releases' }
+        // и чтобы найти плагин userdev от NeoForge
+        maven {
+            name = 'NeoForged Plugin Releases'
+            url  = 'https://maven.neoforged.net/releases'
+        }
     }
 }
 
